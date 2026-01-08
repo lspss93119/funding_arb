@@ -34,12 +34,11 @@ class LighterExchange(Exchange):
         self.api_client = ApiClient(self.configuration)
         
         # Initialize SignerClient for order creation
-        # Required positional args: url, private_key, api_key_index, account_index
+        # Signature: (url, account_index, api_private_keys: Dict[int, str])
         self.signer_client = SignerClient(
             self.BASE_URL,
-            private_key,
-            api_key_index,
-            account_index
+            account_index,
+            {api_key_index: private_key}
         )
         
         self.market_map = {} # Symbol -> MarketID
@@ -388,7 +387,8 @@ class LighterExchange(Exchange):
                 _, fresh_nonce = self.signer_client.nonce_manager.next_nonce()
                 
                 # 2. Sign Order
-                tx_info, error = self.signer_client.sign_create_order(
+                # SDK returns: (tx_type, tx_info, tx_hash, error)
+                stx_type, stx_info, stx_hash, error = self.signer_client.sign_create_order(
                     market_index=market_id,
                     client_order_index=client_order_index,
                     base_amount=base_amount_int,
@@ -401,29 +401,31 @@ class LighterExchange(Exchange):
                     order_expiry=-1,
                     nonce=fresh_nonce
                 )
+                
+                if error:
+                    logger.error(f"Sign Order Error: {error}")
+                    return {"error": error}
+                
                     
                 # 3. Send Transaction
-                logger.info(f"Sending Signed Transaction to Lighter (Nonce: {fresh_nonce})...")
+                logger.info(f"Sending Signed Transaction to Lighter (Nonce: {fresh_nonce}, Hash: {stx_hash})...")
                 api_resp = await self.signer_client.send_tx(
-                    tx_type=14, 
-                    tx_info=tx_info
+                    tx_type=int(stx_type), 
+                    tx_info=stx_info
                 )
                 
-                # 3. Handle Response manually
+                # 4. Handle Response
                 if not api_resp:
-                    logger.error("Lighter API returned None (Likely HTTP Error in SDK logs)")
-                    return {"error": "API Send Failed (Check Logs)"}
+                    logger.error("Lighter API returned None")
+                    return {"error": "API Send Failed"}
                     
-                if hasattr(api_resp, 'code') and api_resp.code != 200:
-                    logger.error(f"Lighter API Error Code {api_resp.code}: {getattr(api_resp, 'message', 'Unknown')}")
-                    return {"error": f"API Error {api_resp.code}"}
-
                 logger.info("Lighter Order Sent Successfully!")
                 return {
                     "id": str(client_order_index),
                     "symbol": symbol,
                     "status": "OPEN",
-                    "tx_info": tx_info
+                    "tx_hash": stx_hash,
+                    "tx_info": stx_info
                 }
 
             except Exception as e:
@@ -483,18 +485,21 @@ class LighterExchange(Exchange):
             # Get Synchronized Nonce
             _, fresh_nonce = self.signer_client.nonce_manager.next_nonce()
 
-            tx_info, error = self.signer_client.sign_cancel_order(
+            v, r, s, error = self.signer_client.sign_cancel_order(
                 market_index=market_id,
                 order_index=oid,
                 nonce=fresh_nonce
             )
             
+            # SDK returns (tx_type, tx_info, tx_hash, error)
+            stx_type, stx_info, stx_hash, error = v, r, s, error
+
             if error:
                 logger.error(f"Sign Cancel Error: {error}")
                 self.signer_client.nonce_manager.acknowledge_failure(self.api_key_index)
                 return False
                 
-            api_resp = await self.signer_client.send_tx(tx_type=15, tx_info=tx_info)
+            api_resp = await self.signer_client.send_tx(tx_type=int(stx_type), tx_info=stx_info)
             
             if not api_resp:
                 logger.error("Cancel API returned None")

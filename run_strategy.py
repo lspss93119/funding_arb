@@ -8,7 +8,9 @@ from trading_bot.config.settings import config
 from trading_bot.exchanges.base import Exchange
 from trading_bot.exchanges.backpack import BackpackExchange
 from trading_bot.exchanges.lighter import LighterExchange
+from trading_bot.exchanges.edgex import EdgeXExchange
 from trading_bot.strategies.funding_arb import FundingArbitrageStrategy
+from trading_bot.strategies.dynamic_funding_arb import DynamicFundingArbitrageStrategy
 from trading_bot.ui.dashboard import TradingDashboard
 
 # Initialize Dashboard
@@ -58,50 +60,74 @@ async def run_strategy_loop(strat_name: str, shared_exchanges: Dict[str, Exchang
     lighter_ex = shared_exchanges.get("lighter")
     spot_ex = shared_exchanges.get("backpack")
     
-    if not lighter_ex or not spot_ex:
-        logger.error(f"[{strat_name}] Shared exchanges not initialized.")
-        return
+    p_name = strat_cfg.get("primary_exchange", "lighter")
+    s_name = strat_cfg.get("secondary_exchange", "backpack")
+    pair = strat_cfg.get("pair") 
 
     try:
-        # Configure Params
-        pair = strat_cfg.get("pair") 
-        bp_cfg = config.get_exchange_config("backpack")
-        bp_map = bp_cfg.get("symbol_map", {})
-        bp_symbol = bp_map.get(pair, pair.replace("-", "_") + "_PERP")
-        
-        strategy_params = {
-            "symbol_primary": pair,
-            "symbol_secondary": bp_symbol,
-            "position_size": strat_cfg.get("order_size_sol", 0.0), 
-            "order_size_usd": strat_cfg.get("order_size_usd"),
-            "entry_threshold": strat_cfg.get("entry_threshold", 0.01),
-            "exit_threshold": strat_cfg.get("exit_threshold", 0.005),
-            "is_simulation": strat_cfg.get("is_simulation", True),
-            "min_apr": 0.05,
-            "max_position_size": strat_cfg.get("max_position_size", 0.0), 
-            "max_position_size_usd": strat_cfg.get("max_position_size_usd"),
-            "auto_revert": strat_cfg.get("auto_revert", False),
-            "on_state_update": lambda data: dashboard.update_state(strat_name, data)
-        }
-        
-        exchanges = {
-            "primary": lighter_ex,
-            "secondary": spot_ex
-        }
-        
-        strategy = FundingArbitrageStrategy(exchanges, strategy_params)
-        logger.info(f"[{pair}] Strategy Initialized.")
+        if strat_cfg.get("type") == "dynamic_funding_arbitrage":
+             logger.info(f"[{strat_name}] Config Read: max_pos={strat_cfg.get('max_position_size_usd')} order={strat_cfg.get('order_size_usd')}")
+             strategy_params = {
+                "pair": pair,
+                "available_exchanges": strat_cfg.get("available_exchanges", ["lighter", "backpack", "edgex"]),
+                "entry_threshold_apr": strat_cfg.get("entry_threshold_apr", 0.05),
+                "exit_threshold_apr": strat_cfg.get("exit_threshold_apr", 0.0),
+                "order_size_usd": strat_cfg.get("order_size_usd", 100),
+                "max_position_size_usd": strat_cfg.get("max_position_size_usd", 100.0),
+                "is_simulation": strat_cfg.get("is_simulation", True),
+                "exchange_configs": config.get("exchanges", {}),
+                "on_state_update": lambda data: dashboard.update_state(strat_name, data)
+             }
+             strategy = DynamicFundingArbitrageStrategy(shared_exchanges, strategy_params)
+        else:
+             primary_ex = shared_exchanges.get(p_name)
+             secondary_ex = shared_exchanges.get(s_name)
+             
+             if not primary_ex or not secondary_ex:
+                 logger.error(f"[{strat_name}] Required exchanges ({p_name}, {s_name}) not initialized.")
+                 return
+
+             s_ex_cfg = config.get_exchange_config(s_name)
+             s_map = s_ex_cfg.get("symbol_map", {})
+             secondary_symbol = s_map.get(pair, pair)
+             
+             strategy_params = {
+                 "symbol_primary": pair,
+                 "symbol_secondary": secondary_symbol,
+                 "position_size": 0.0,
+                 "order_size_usd": strat_cfg.get("order_size_usd"),
+                 "entry_threshold": strat_cfg.get("entry_threshold", 0.01),
+                 "exit_threshold": strat_cfg.get("exit_threshold", 0.005),
+                 "is_simulation": strat_cfg.get("is_simulation", True),
+                 "min_apr": 0.05,
+                 "max_position_size": strat_cfg.get("max_position_size", 0.0), 
+                 "max_position_size_usd": strat_cfg.get("max_position_size_usd"),
+                 "auto_revert": strat_cfg.get("auto_revert", False),
+                 "on_state_update": lambda data: dashboard.update_state(strat_name, data)
+             }
+             
+             exchanges = {
+                 "primary": primary_ex,
+                 "secondary": secondary_ex
+             }
+             strategy = FundingArbitrageStrategy(exchanges, strategy_params)
+             
+        logger.info(f"[{pair}] Strategy ({strat_cfg.get('type', 'fixed')}) Initialized.")
         
         # Force initial update to populate TUI row immediately
+        # Fixed: Use correct max_position for dynamic
+        def get_initial_max():
+            if strat_cfg.get("type") == "dynamic_funding_arbitrage":
+                return f"${strategy_params.get('max_position_size_usd', 0)}"
+            return f"${strategy_params.get('max_position_size_usd', 0)}" # Standardize on USD display
+            
         dashboard.update_state(strat_name, {
+            "symbol": pair,
             "status": "Initializing...",
             "spread": 0.0,
-            "rate_primary": 0.0,
-            "rate_secondary": 0.0,
             "position_size": 0.0,
-            "max_position": strategy_params.get("max_position_size", 1.0)
+            "max_position": get_initial_max()
         })
-        
         await strategy.on_start()
         
         while True:
@@ -169,6 +195,13 @@ async def main():
 
     shared_exchanges["lighter"] = LighterExchange(l_pk, l_acc, l_api, config=l_cfg)
     shared_exchanges["backpack"] = BackpackExchange(bp_key, bp_sec)
+    
+    # EdgeX (Check if keys exist)
+    ex_pk = os.getenv("EDGEX_L2_PRIVATE_KEY")
+    ex_acc = os.getenv("EDGEX_ACCOUNT_ID")
+    if ex_pk and ex_acc:
+        shared_exchanges["edgex"] = EdgeXExchange(ex_pk, int(ex_acc))
+        print("EdgeX Exchange Initialized.")
 
     tasks = []
     for s in strategies:
@@ -178,10 +211,12 @@ async def main():
     async def balance_monitor():
         while True:
             try:
-                l_bal = await shared_exchanges["lighter"].get_balance()
-                b_bal = await shared_exchanges["backpack"].get_balance()
-                dashboard.update_balance("Lighter", l_bal)
-                dashboard.update_balance("Backpack", b_bal)
+                for name, ex in shared_exchanges.items():
+                    bal = await ex.get_balance()
+                    # User requested to hide SOL for Backpack
+                    if name == "backpack":
+                        bal = {k: v for k, v in bal.items() if k in ["USD", "USDC"]}
+                    dashboard.update_balance(name.capitalize(), bal)
             except Exception as e:
                 logging.getLogger("runner").error(f"Balance update failed: {e}")
             await asyncio.sleep(60)
@@ -205,9 +240,6 @@ async def main():
             
             if os.path.exists("bot.pid"):
                 os.remove("bot.pid")
-
-if __name__ == "__main__":
-    asyncio.run(main())
 
 if __name__ == "__main__":
     asyncio.run(main())

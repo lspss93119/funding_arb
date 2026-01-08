@@ -312,12 +312,21 @@ class FundingArbitrageStrategy(Strategy):
                         pos_display = f"${est_usd:.2f}"
                         # logger.info(f"UI POS DEBUG: Size={self.current_position_size} Price={price} EstUSD={est_usd}")
 
+                # Map specific exchange rates for the new dashboard layout
+                p_name = self.primary.name.lower()
+                s_name = self.secondary.name.lower() if self.secondary else None
+                
+                rates_data = {
+                    f"rate_{p_name}": apr_primary * 100,
+                }
+                if s_name:
+                    rates_data[f"rate_{s_name}"] = apr_secondary * 100
+
                 self.on_state_update({
                     "symbol": self.symbol_primary, # Identity
                     "price": price, # For UI valuation
                     "spread": spread_apr * 100,
-                    "rate_primary": apr_primary * 100,
-                    "rate_secondary": apr_secondary * 100,
+                    **rates_data,
                     "position_size": self.current_position_size,
                     "position_display": pos_display,
                     "max_position": max_pos_display,

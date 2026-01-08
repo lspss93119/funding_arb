@@ -18,12 +18,13 @@ class TradingDashboard:
         self.logs = []
         self.max_logs = 10
         
-        # Initial Setup
+        # Initial Setup - Using Ratios for better scaling
         self.layout.split(
             Layout(name="header", size=3),
-            Layout(name="main", size=10),      # Fixed: Strategies
-            Layout(name="balances", size=8),   # Fixed: Balances
-            Layout(name="footer", ratio=1)     # Flexible: Logs
+            Layout(name="monitoring", ratio=2, minimum_size=5),  # Proportional
+            Layout(name="positions", ratio=2, minimum_size=5),   # Proportional
+            Layout(name="balances", ratio=2, minimum_size=5),    # Proportional
+            Layout(name="footer", ratio=1, minimum_size=3)       # Logs
         )
         
     def update_state(self, strategy_name: str, data: Dict[str, Any]):
@@ -54,41 +55,61 @@ class TradingDashboard:
         if len(self.logs) > self.max_logs:
             self.logs.pop(0)
 
-    def generate_table(self) -> Table:
-        table = Table(expand=False, show_lines=True, box=box.ROUNDED)
-        table.add_column("Strategy", style="cyan")
-        table.add_column("Net Rate", justify="right")
-        table.add_column("Rates (P / S)", justify="center")
-        table.add_column("Position", justify="right", no_wrap=True)
-        table.add_column("Real P", justify="right", style="bold")
-        table.add_column("Real S", justify="right", style="bold")
-        table.add_column("PnL", justify="right", style="bold green") # New Column
-        table.add_column("Status", style="magenta")
-        table.add_column("Last Update", style="dim")
+    def generate_monitoring_table(self) -> Table:
+        table = Table(expand=True, show_lines=True, box=box.ROUNDED)
+        table.add_column("Symbol", style="cyan", no_wrap=True, min_width=15)
+        table.add_column("Lighter (H)", justify="right", min_width=10)
+        table.add_column("Backpack (H)", justify="right", min_width=10)
+        table.add_column("EdgeX (H)", justify="right", min_width=10)
+        table.add_column("Best Spread", justify="right", style="bold yellow", min_width=12)
 
         for name, data in self.states.items():
-            # Spread Coloring
+            # Rates
+            r_lighter = data.get('rate_lighter', 0.0)
+            r_backpack = data.get('rate_backpack', 0.0)
+            r_edgex = data.get('rate_edgex', 0.0)
+            
+            def fmt_rate(val):
+                if val == 0 and "rate_lighter" not in data and "rate_backpack" not in data and "rate_edgex" not in data:
+                    return "-"
+                color = "green" if val > 0 else "red" if val < 0 else "white"
+                return f"[{color}]{val:.2f}%[/{color}]"
+
+            # Spread (Best Spread)
             spread = data.get('spread', 0)
             spread_color = "green" if spread < -0.5 else "red" if spread > 0.5 else "yellow"
             spread_text = f"[{spread_color}]{spread:.4f}%[/{spread_color}]"
-            
+
+            table.add_row(
+                name,
+                fmt_rate(r_lighter),
+                fmt_rate(r_backpack),
+                fmt_rate(r_edgex),
+                spread_text
+            )
+        return table
+
+    def generate_status_table(self) -> Table:
+        table = Table(expand=True, show_lines=True, box=box.ROUNDED)
+        table.add_column("Symbol", style="cyan", no_wrap=True, min_width=15)
+        table.add_column("Position (Size / Max)", justify="right", no_wrap=True, min_width=20)
+        table.add_column("PnL ($)", justify="right", style="bold green", min_width=10)
+        table.add_column("Current Status", style="magenta", min_width=15)
+        table.add_column("Update", style="dim", width=8)
+
+        for name, data in self.states.items():
             # Position
             pos = data.get('position_size', 0)
-            pos_disp = data.get('position_display') # Optional override
+            pos_disp = data.get('position_display')
             max_pos = data.get('max_position', 0)
             
-            # Format pos depending on type
             if pos_disp:
                 pos_text = f"{pos_disp} / {max_pos}"
             else:
-                # Fallback: Try to calculate USD-equivalent if we have price and MaxPos is USD
-                pos_val = pos
-                is_usd_limit = str(max_pos).startswith("$")
-                
-                # Try to find price
                 sym = data.get('symbol', '')
                 base = sym.split("-")[0] if "-" in sym else sym
                 price = self.prices.get(base, 0)
+                is_usd_limit = str(max_pos).startswith("$")
                 
                 if is_usd_limit and price > 0:
                      est_val = pos * price
@@ -97,61 +118,17 @@ class TradingDashboard:
                      pos_str = f"{pos:.4f}" if isinstance(pos, (int, float)) else str(pos)
                      pos_text = f"{pos_str} / {max_pos}"
             
-            # Rates
-            r_p = data.get('rate_primary', 0)
-            r_s = data.get('rate_secondary', 0)
-            rates_text = f"{r_p:.2f}% / {r_s:.2f}%"
-            
-            # Real Positions
-            rp = data.get('real_pos_primary', 0)
-            rs = data.get('real_pos_secondary', 0)
-            
-            rp_disp = data.get('real_pos_primary_disp')
-            rs_disp = data.get('real_pos_secondary_disp')
-            
-            # Helper for color
-            def get_pos_color(val, bot_pos_size):
-                # 1. Mismatch Checks
-                # Bot thinks open (>0), Real is 0 -> DANGER
-                if abs(bot_pos_size) > 0.0001 and abs(val) < 0.0001:
-                    return "bold red" # Danger: Position missing
-                # Bot thinks closed (0), Real is open -> WARNING
-                if abs(bot_pos_size) < 0.0001 and abs(val) > 0.0001:
-                    return "yellow" # Warning: Residual position
-                    
-                # 2. Normal State Color (Green = Long, Red = Short)
-                if val > 0.0001: return "green"
-                if val < -0.0001: return "red"
-                return "dim white"
-
-            bot_pos_size = data.get('position_size', 0)
-            
-            rp_color = get_pos_color(rp, bot_pos_size)
-            # For Secondary, we check against bot_pos_size too, but secondary side might be opposite?
-            # Actually bot_pos_size is just magnitude. 
-            # Ideally we check against expected side, but for now just sign coloring is key.
-            # Mismatch logic for secondary might be tricky if we don't track expected secondary side explicitly in data.
-            # But the 'residual' check (bot says 0, real says >0) is valid for both.
-            # The 'missing' check (bot says >0, real says 0) is also valid.
-            
-            rs_color = get_pos_color(rs, bot_pos_size)
-
-            real_text_p = f"[{rp_color}]{rp}[/{rp_color}]"
-            status = data.get('status', 'Waiting')
-            last_update = data.get('last_update', '')
-            
             # PnL
             pnl = data.get('realized_pnl', 0.0)
             pnl_color = "green" if pnl >= 0 else "red"
             pnl_text = f"[{pnl_color}]${pnl:.2f}[/{pnl_color}]"
 
+            status = data.get('status', 'Waiting')
+            last_update = data.get('last_update', '')
+
             table.add_row(
-                name, 
-                spread_text, 
-                rates_text, 
+                name,
                 pos_text,
-                Text(str(rp), style=get_pos_color(rp, pos)),
-                Text(str(rs), style="dim" if rs == 0 else "white"),
                 pnl_text,
                 status,
                 last_update
@@ -159,10 +136,10 @@ class TradingDashboard:
         return table
 
     def generate_balance_table(self) -> Table:
-        table = Table(expand=False, show_lines=True, box=box.ROUNDED)
+        table = Table(expand=True, show_lines=True, box=box.ROUNDED)
         table.add_column("Exchange", style="cyan")
         table.add_column("Asset", style="yellow")
-        table.add_column("Balance", justify="right", style="green", no_wrap=True)
+        table.add_column("Balance / Value", justify="right", style="green", no_wrap=True)
 
         for exchange, bals in self.balances.items():
             first = True
@@ -217,9 +194,14 @@ class TradingDashboard:
             Panel(Text("🚀 Low Gravity Arbitrage Bot 🚀", justify="center", style="bold white"), style="blue")
         )
         
-        # Main Table
-        self.layout["main"].update(
-            Panel(self.generate_table(), title="Active Strategies", border_style="green")
+        # Monitoring Block
+        self.layout["monitoring"].update(
+            Panel(self.generate_monitoring_table(), title="Funding Rate Monitoring (APR)", border_style="green")
+        )
+
+        # Positions Block
+        self.layout["positions"].update(
+            Panel(self.generate_status_table(), title="Portfolio & Strategy Status", border_style="magenta")
         )
         
         # Balance Table

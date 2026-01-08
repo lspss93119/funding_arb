@@ -6,82 +6,46 @@
 # Choose which strategy config block to load
 # Supports list for multi-pair execution
 active_strategies: 
-  - "funding_arb_sol"
-  - "funding_arb_btc"
-  - "funding_arb_eth"
+  - "dynamic_arb_sol"
+  - "dynamic_arb_btc"
+  - "dynamic_arb_eth"
 
 # --- Strategies Configuration ---
 strategies:
-  # Strategy 1: SOL Funding Arbitrage
-  funding_arb_sol:
-    type: "funding_arbitrage"
+  # Strategy 1: Dynamic SOL
+  dynamic_arb_sol:
+    type: "dynamic_funding_arbitrage"
     pair: "SOL-USDC"
-    primary_exchange: "lighter"
-    secondary_exchange: "backpack"
-    
-    # Execution Mode
+    available_exchanges: ["lighter", "backpack", "edgex"]
     is_simulation: false
-    
-    # Thresholds (Spread %)
-    entry_threshold: 0.05 
-    exit_threshold: 0.005 
-    
-    # Order Size
-    position_size: 0.0 # Force disable fixed
+    entry_threshold_apr: 0.05
+    exit_threshold_apr: 0.0
     order_size_usd: 100.0 
-    
-    # Safety Limits
-    # Safety Limits
-    # max_position_size: 10.0 # Max ~1k USD
     max_position_size_usd: 100.0
-    auto_revert: true
-    execution_window_minutes: 5
-    
-  # Strategy 2: BTC Funding Arbitrage
-  funding_arb_btc:
-    type: "funding_arbitrage"
-    pair: "BTC-USDC"
-    primary_exchange: "lighter"
-    secondary_exchange: "backpack"
-    
-    # Execution Mode
-    is_simulation: false
-    
-    # Thresholds (Spread %)
-    entry_threshold: 0.05 
-    exit_threshold: 0.005 
-    
-    # Order Size
-    position_size: 0.0 # Force disable fixed
-    order_size_usd: 100.0
-    
-    # Safety Limits
-    # max_position_size: 0.01 # Max ~1k USD
-    max_position_size_usd: 100.0
-    auto_revert: true
     execution_window_minutes: 5
 
-  # Strategy 3: ETH Funding Arbitrage
-  funding_arb_eth:
-    type: "funding_arbitrage"
-    pair: "ETH-USDC"
-    primary_exchange: "lighter"
-    secondary_exchange: "backpack"
-    
-    # Execution Mode
+  # Strategy 2: Dynamic BTC
+  dynamic_arb_btc:
+    type: "dynamic_funding_arbitrage"
+    pair: "BTC-USDC"
+    available_exchanges: ["lighter", "backpack", "edgex"]
     is_simulation: false
-    
-    # Thresholds (Spread %)
-    entry_threshold: 0.05 
-    exit_threshold: 0.005 
-    
-    # Order Size
-    position_size: 0.0
-    order_size_usd: 100.0
-    
-    # Safety Limits
+    entry_threshold_apr: 0.05
+    exit_threshold_apr: 0.0
+    order_size_usd: 100.0 
     max_position_size_usd: 100.0
-    auto_revert: true
+    execution_window_minutes: 5
+
+  # Strategy 3: Dynamic ETH
+  dynamic_arb_eth:
+    type: "dynamic_funding_arbitrage"
+    pair: "ETH-USDC"
+    available_exchanges: ["lighter", "backpack", "edgex"]
+    is_simulation: false
+    entry_threshold_apr: 0.05
+    exit_threshold_apr: 0.0
+    order_size_usd: 100.0 
+    max_position_size_usd: 100.0
     execution_window_minutes: 5
 
 # --- Exchanges Configuration ---
@@ -116,3 +80,10 @@ exchanges:
       "SOL-USDC": "SOL_USDC_PERP"
       "BTC-USDC": "BTC_USDC_PERP"
       "ETH-USDC": "ETH_USDC_PERP"
+
+  edgex:
+    # EdgeX Specific Symbol Mapping (contractName)
+    symbol_map:
+      "SOL-USDC": "SOLUSD"
+      "BTC-USDC": "BTCUSD"
+      "ETH-USDC": "ETHUSD"

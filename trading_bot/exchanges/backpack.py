@@ -153,7 +153,7 @@ class BackpackExchange(Exchange):
                     # quantity includes stepSize
                     qty_filter = filters.get("quantity", {})
                     if "stepSize" in qty_filter:
-                         self.markets[symbol] = {
+                         self.market_meta[symbol] = {
                              "stepSize": float(qty_filter["stepSize"]),
                              "minQty": float(qty_filter.get("minQuantity", 0))
                          }
@@ -174,35 +174,6 @@ class BackpackExchange(Exchange):
         format_str = f"{{:.{precision}f}}"
         return format_str.format(int(value / step) * step)
 
-    async def create_order(self, symbol: str, side: str, order_type: str, price: float, quantity: float) -> Dict[str, Any]:
-        """
-        Create an order.
-        """
-        target_symbol = symbol.replace("-", "_")
-        
-        # Adjust quantity for precision
-        if target_symbol in self.markets:
-            step = self.markets[target_symbol]["stepSize"]
-            qty_str = self._truncate(quantity, step)
-        else:
-            # Fallback if market info not loaded?
-            # Try to infer? Or just send as is (risk 400)
-            qty_str = f"{quantity:.4f}"
-            
-        payload = {
-            "symbol": target_symbol,
-            "side": "Bid" if side.upper() == "BUY" else "Ask",
-            "orderType": "Limit" if order_type.upper() == "LIMIT" else "Market",
-            "quantity": qty_str
-        }
-        if order_type.upper() == "LIMIT":
-            payload["price"] = str(price)
-            # Add TIF if needed? Default is GTC
-            
-        endpoint = "/api/v1/order"
-        instruction = "orderExecute"
-        
-        return await self._request("POST", endpoint, payload, signed=True, instruction=instruction)
 
     async def _get_tick_size(self, symbol: str) -> float:
         """
@@ -351,19 +322,22 @@ class BackpackExchange(Exchange):
         
         # --- Quantity Precision ---
         # Ensure quantity respects stepSize
+        if not self.market_meta:
+            await self.fetch_markets()
+
         step_size = 0.001 # Default fallback
         if target_symbol in self.market_meta:
             step_size = self.market_meta[target_symbol].get("stepSize", 0.001)
         
-        # Round DOWN to nearest stepSize to avoid exceeding available balance if close
-        # Use simple string formatting logic
-        if step_size < 1:
-            qty_decimals = len(str(step_size).split(".")[-1])
-            # Truncate/Round
-            # Avoiding float math errors:
-            formatted_qty = f"{quantity:.{qty_decimals}f}"
-        else:
-            formatted_qty = str(int(quantity))
+        # Calculate precision from stepSize (e.g. 0.01 -> 2)
+        import math
+        qty_precision = max(0, int(round(-math.log10(step_size))))
+        
+        # Truncate to precision (don't round up to avoid balance issues)
+        factor = 10**qty_precision
+        truncated_qty = math.floor(quantity * factor) / factor
+        formatted_qty = f"{truncated_qty:.{qty_precision}f}"
+        logger.debug(f"Backpack Precision: Step={step_size}, Prec={qty_precision}, Raw={quantity}, Final={formatted_qty}")
             
         payload = {
             "symbol": target_symbol,
