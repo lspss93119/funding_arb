@@ -1,14 +1,30 @@
-# Claude Code settings and local files
-.claude/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Logs
+*.log
+bot.pid
+bot_restart_final.log
+
+# Database
+*.db
+
+# Temporary SDKs/Data
+temp_sdk/
+temp_sdk_real/
+*.txt
+*.db-journal
+
+# OS
 .DS_Store
-settings.local.json
-
-# OS generated files
 Thumbs.db
-*.swp
-*.swo
-*~
 
-# IDE files
+# Claude/IDE
+.claude/
 .vscode/
 .idea/
+settings.local.json

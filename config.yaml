@@ -1,0 +1,118 @@
+# Trading Bot Configuration
+# This file controls the active strategy, trading pairs, and exchange parameters.
+# Comments are supported (start with #).
+
+# --- Active Strategy ---
+# Choose which strategy config block to load
+# Supports list for multi-pair execution
+active_strategies: 
+  - "funding_arb_sol"
+  - "funding_arb_btc"
+  - "funding_arb_eth"
+
+# --- Strategies Configuration ---
+strategies:
+  # Strategy 1: SOL Funding Arbitrage
+  funding_arb_sol:
+    type: "funding_arbitrage"
+    pair: "SOL-USDC"
+    primary_exchange: "lighter"
+    secondary_exchange: "backpack"
+    
+    # Execution Mode
+    is_simulation: false
+    
+    # Thresholds (Spread %)
+    entry_threshold: 0.05 
+    exit_threshold: 0.005 
+    
+    # Order Size
+    position_size: 0.0 # Force disable fixed
+    order_size_usd: 100.0 
+    
+    # Safety Limits
+    # Safety Limits
+    # max_position_size: 10.0 # Max ~1k USD
+    max_position_size_usd: 100.0
+    auto_revert: true
+    execution_window_minutes: 5
+    
+  # Strategy 2: BTC Funding Arbitrage
+  funding_arb_btc:
+    type: "funding_arbitrage"
+    pair: "BTC-USDC"
+    primary_exchange: "lighter"
+    secondary_exchange: "backpack"
+    
+    # Execution Mode
+    is_simulation: false
+    
+    # Thresholds (Spread %)
+    entry_threshold: 0.05 
+    exit_threshold: 0.005 
+    
+    # Order Size
+    position_size: 0.0 # Force disable fixed
+    order_size_usd: 100.0
+    
+    # Safety Limits
+    # max_position_size: 0.01 # Max ~1k USD
+    max_position_size_usd: 100.0
+    auto_revert: true
+    execution_window_minutes: 5
+
+  # Strategy 3: ETH Funding Arbitrage
+  funding_arb_eth:
+    type: "funding_arbitrage"
+    pair: "ETH-USDC"
+    primary_exchange: "lighter"
+    secondary_exchange: "backpack"
+    
+    # Execution Mode
+    is_simulation: false
+    
+    # Thresholds (Spread %)
+    entry_threshold: 0.05 
+    exit_threshold: 0.005 
+    
+    # Order Size
+    position_size: 0.0
+    order_size_usd: 100.0
+    
+    # Safety Limits
+    max_position_size_usd: 100.0
+    auto_revert: true
+    execution_window_minutes: 5
+
+# --- Exchanges Configuration ---
+exchanges:
+  lighter:
+    # Execution: Simulate Market Order with Limit + Slippage
+    slippage_tolerance: 0.005 # 0.5%
+    
+    # Lighter Specific Market IDs and Multipliers
+    # These override the hardcoded defaults in code
+    markets:
+      "SOL-USDC": 
+        id: 2
+        # Multipliers based on Decimals (3 decimals -> 1000)
+        # Verified via API debug
+        price_mult: 1000
+        size_mult: 1000
+      "BTC-USDC":
+        id: 1
+        # Decimals: Price 1 (10), Size 5 (100000)
+        price_mult: 10
+        size_mult: 100000
+      "ETH-USDC":
+        id: 0
+        # Decimals: Price 2 (100), Size 4 (10000)
+        price_mult: 100
+        size_mult: 10000
+
+  backpack:
+    # Backpack Specific Symbol Mapping
+    symbol_map:
+      "SOL-USDC": "SOL_USDC_PERP"
+      "BTC-USDC": "BTC_USDC_PERP"
+      "ETH-USDC": "ETH_USDC_PERP"

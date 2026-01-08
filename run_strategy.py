@@ -1,0 +1,213 @@
+import asyncio
+import logging
+import sys
+import os
+from typing import Dict, List
+from logging.handlers import RotatingFileHandler
+from trading_bot.config.settings import config
+from trading_bot.exchanges.base import Exchange
+from trading_bot.exchanges.backpack import BackpackExchange
+from trading_bot.exchanges.lighter import LighterExchange
+from trading_bot.strategies.funding_arb import FundingArbitrageStrategy
+from trading_bot.ui.dashboard import TradingDashboard
+
+# Initialize Dashboard
+dashboard = TradingDashboard()
+
+class DashboardLogHandler(logging.Handler):
+    def emit(self, record):
+        msg = self.format(record)
+        dashboard.add_log(msg)
+
+# Configure Logging
+# Use Dashboard Handler instead of stdout
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.handlers = [] # Clear default
+
+# 1. Dashboard Handler (For TUI)
+handler = DashboardLogHandler()
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter('%(name)s: %(message)s'))
+root_logger.addHandler(handler)
+
+# 2. File Handler (For Persistence)
+try:
+    log_file = "bot.log"
+    file_handler = RotatingFileHandler(log_file, maxBytes=20*1024*1024, backupCount=5)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    file_handler.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+except Exception as e:
+    # Fallback to TUI log if file setup fails
+    pass
+
+async def run_strategy_loop(strat_name: str, shared_exchanges: Dict[str, Exchange]):
+    """
+    Runs a single strategy loop.
+    """
+    logger = logging.getLogger(f"runner.{strat_name}")
+    logger.info(f"--- Running Strategy: {strat_name} ---")
+    
+    strat_cfg = config.get_strategy_config(strat_name)
+    if not strat_cfg:
+        logger.error(f"Config not found for {strat_name}")
+        return
+
+    # Use Shared Exchanges
+    lighter_ex = shared_exchanges.get("lighter")
+    spot_ex = shared_exchanges.get("backpack")
+    
+    if not lighter_ex or not spot_ex:
+        logger.error(f"[{strat_name}] Shared exchanges not initialized.")
+        return
+
+    try:
+        # Configure Params
+        pair = strat_cfg.get("pair") 
+        bp_cfg = config.get_exchange_config("backpack")
+        bp_map = bp_cfg.get("symbol_map", {})
+        bp_symbol = bp_map.get(pair, pair.replace("-", "_") + "_PERP")
+        
+        strategy_params = {
+            "symbol_primary": pair,
+            "symbol_secondary": bp_symbol,
+            "position_size": strat_cfg.get("order_size_sol", 0.0), 
+            "order_size_usd": strat_cfg.get("order_size_usd"),
+            "entry_threshold": strat_cfg.get("entry_threshold", 0.01),
+            "exit_threshold": strat_cfg.get("exit_threshold", 0.005),
+            "is_simulation": strat_cfg.get("is_simulation", True),
+            "min_apr": 0.05,
+            "max_position_size": strat_cfg.get("max_position_size", 0.0), 
+            "max_position_size_usd": strat_cfg.get("max_position_size_usd"),
+            "auto_revert": strat_cfg.get("auto_revert", False),
+            "on_state_update": lambda data: dashboard.update_state(strat_name, data)
+        }
+        
+        exchanges = {
+            "primary": lighter_ex,
+            "secondary": spot_ex
+        }
+        
+        strategy = FundingArbitrageStrategy(exchanges, strategy_params)
+        logger.info(f"[{pair}] Strategy Initialized.")
+        
+        # Force initial update to populate TUI row immediately
+        dashboard.update_state(strat_name, {
+            "status": "Initializing...",
+            "spread": 0.0,
+            "rate_primary": 0.0,
+            "rate_secondary": 0.0,
+            "position_size": 0.0,
+            "max_position": strategy_params.get("max_position_size", 1.0)
+        })
+        
+        await strategy.on_start()
+        
+        while True:
+            await strategy.check_opportunity()
+            await asyncio.sleep(60) # 1 Minute Interval
+            
+    except asyncio.CancelledError:
+        logger.info(f"[{strat_name}] Stopping...")
+    except Exception as e:
+        logger.error(f"[{strat_name}] Error: {e}", exc_info=True)
+    finally:
+        logger.info(f"[{strat_name}] Stopped.")
+
+def check_single_instance():
+    pid_file = "bot.pid"
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file, "r") as f:
+                old_pid = int(f.read().strip())
+            
+            # Check if process is running
+            try:
+                os.kill(old_pid, 0) # Signal 0 checks existence
+                print(f"⚠️  Another instance is running (PID {old_pid}). Exiting.")
+                return False
+            except OSError:
+                pass
+        except ValueError:
+            pass
+
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+    return True
+
+async def main():
+    if not check_single_instance():
+        return
+
+    print("=== Starting Multi-Pair Bot ===")
+    
+    strategies = config.get_active_strategies()
+    if not strategies:
+        print("No active strategies configured.")
+        return
+        
+    print(f"Active Strategies: {strategies}")
+    
+    # --- Shared Exchange Initialization ---
+    shared_exchanges = {}
+    
+    # Lighter
+    l_cfg = config.get_exchange_config("lighter")
+    l_pk = os.getenv("LIGHTER_PRIVATE_KEY")
+    l_acc = int(os.getenv("LIGHTER_ACCOUNT_INDEX", 0))
+    l_api = int(os.getenv("LIGHTER_API_KEY_INDEX", 0))
+    
+    # Backpack
+    bp_cfg = config.get_exchange_config("backpack")
+    bp_key = config.get("backpack_api_key")
+    bp_sec = config.get("backpack_api_secret")
+    
+    if not l_pk or not bp_key:
+        print("CRITICAL: Missing credentials in .env or config.yaml")
+        return
+
+    shared_exchanges["lighter"] = LighterExchange(l_pk, l_acc, l_api, config=l_cfg)
+    shared_exchanges["backpack"] = BackpackExchange(bp_key, bp_sec)
+
+    tasks = []
+    for s in strategies:
+        tasks.append(asyncio.create_task(run_strategy_loop(s, shared_exchanges)))
+        
+    # Balance Monitor Task
+    async def balance_monitor():
+        while True:
+            try:
+                l_bal = await shared_exchanges["lighter"].get_balance()
+                b_bal = await shared_exchanges["backpack"].get_balance()
+                dashboard.update_balance("Lighter", l_bal)
+                dashboard.update_balance("Backpack", b_bal)
+            except Exception as e:
+                logging.getLogger("runner").error(f"Balance update failed: {e}")
+            await asyncio.sleep(60)
+
+    monitor_task = asyncio.create_task(balance_monitor())
+
+    # Run all
+    with dashboard.create_live():
+        try:
+            await asyncio.gather(*tasks, monitor_task)
+        except KeyboardInterrupt:
+            dashboard.add_log("Stopping All...")
+            for t in tasks:
+                t.cancel()
+            monitor_task.cancel()
+            await asyncio.gather(*tasks, monitor_task, return_exceptions=True)
+        finally:
+            # Shared Cleanup
+            for ex in shared_exchanges.values():
+                await ex.close()
+            
+            if os.path.exists("bot.pid"):
+                os.remove("bot.pid")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())
