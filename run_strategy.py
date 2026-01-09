@@ -212,34 +212,61 @@ async def main():
         while True:
             try:
                 for name, ex in shared_exchanges.items():
-                    bal = await ex.get_balance()
-                    # User requested to hide SOL for Backpack
-                    if name == "backpack":
-                        bal = {k: v for k, v in bal.items() if k in ["USD", "USDC"]}
-                    dashboard.update_balance(name.capitalize(), bal)
+                    try:
+                        bal = await ex.get_balance()
+                        # User requested to hide SOL for Backpack
+                        if name == "backpack":
+                            bal = {k: v for k, v in bal.items() if k in ["USD", "USDC"]}
+                        dashboard.update_balance(name.capitalize(), bal)
+                    except Exception as e:
+                        logging.getLogger("runner").warning(f"Balance fetch failed for {name}: {e}")
             except Exception as e:
-                logging.getLogger("runner").error(f"Balance update failed: {e}")
+                logging.getLogger("runner").error(f"Balance monitor error: {e}")
             await asyncio.sleep(60)
 
     monitor_task = asyncio.create_task(balance_monitor())
 
-    # Run all
-    with dashboard.create_live():
-        try:
-            await asyncio.gather(*tasks, monitor_task)
-        except KeyboardInterrupt:
-            dashboard.add_log("Stopping All...")
-            for t in tasks:
-                t.cancel()
-            monitor_task.cancel()
-            await asyncio.gather(*tasks, monitor_task, return_exceptions=True)
-        finally:
-            # Shared Cleanup
-            for ex in shared_exchanges.values():
-                await ex.close()
-            
-            if os.path.exists("bot.pid"):
-                os.remove("bot.pid")
+    # --- UI 運行區塊 (與核心邏輯去耦合) ---
+    try:
+        # 使用 Rich Live 作為顯示介面
+        with dashboard.create_live():
+            # 這裡我們監聽任務，但如果 UI 結束了，我們不讓任務結束
+            try:
+                # 這裡只是單純等待，直到發生中斷
+                while True:
+                    # 檢查背景任務是否全部崩潰
+                    if all(t.done() for t in tasks) and monitor_task.done():
+                        break
+                    await asyncio.sleep(1)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                raise
+            except Exception as ui_err:
+                logging.getLogger("runner").error(f"UI 介面發生錯誤: {ui_err}")
+                logging.getLogger("runner").info("切換至背景交易模式（Headless Mode）...")
+                # UI 崩潰後，我們進入無限等待，保持核心任務運行
+                while True:
+                    await asyncio.sleep(3600)
+                    
+    except KeyboardInterrupt:
+        logging.getLogger("runner").info("檢測到使用者停止信號，正在安全關閉程式...")
+    finally:
+        # 清理實體進程
+        for t in tasks:
+            t.cancel()
+        monitor_task.cancel()
+        
+        # 等待清理
+        await asyncio.gather(*tasks, monitor_task, return_exceptions=True)
+        
+        # Shared Cleanup
+        for ex in shared_exchanges.values():
+            await ex.close()
+        
+        if os.path.exists("bot.pid"):
+            os.remove("bot.pid")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

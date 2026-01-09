@@ -69,13 +69,30 @@ class EdgeXExchange(Exchange):
 
     def _get_contract_name(self, symbol: str) -> str:
         # Standardize for EdgeX: "SOL-USDC" -> "SOLUSD"
-        return symbol.replace("-", "").replace("_", "").upper()
+        return symbol.upper().replace("-USDC", "USD").replace("_USDC", "USD").replace("-", "").replace("_", "")
 
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         try:
             c_name = self._get_contract_name(symbol)
-            res = await self.client.get_24_hour_quote(c_name)
-            data = self._to_dict(res).get("data", {})
+            c_id = self.contract_id_map.get(c_name)
+            if not c_id:
+                # If metadata task is still running, wait a bit
+                await asyncio.sleep(1)
+                c_id = self.contract_id_map.get(c_name)
+                if not c_id:
+                    return {}
+
+            res = await self.client.get_24_hour_quote(str(c_id))
+            raw_data = self._to_dict(res).get("data", {})
+            
+            # data can be a list or a dict
+            if isinstance(raw_data, list) and len(raw_data) > 0:
+                data = raw_data[0]
+            elif isinstance(raw_data, dict):
+                data = raw_data
+            else:
+                data = {}
+
             return {
                 'symbol': symbol,
                 'bid': float(data.get('bidPrice', 0)),
@@ -168,6 +185,20 @@ class EdgeXExchange(Exchange):
             p_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
             p_type = OrderType.LIMIT if order_type.lower() == "limit" else OrderType.MARKET
             
+            # EdgeX might require a price even for MARKET orders or for signing.
+            # If MARKET and price is 0, fetch ticker to get a reference price.
+            if p_type == OrderType.MARKET and price <= 0:
+                ticker = await self.fetch_ticker(symbol)
+                if ticker and ticker.get('last'):
+                    ref_price = ticker['last']
+                    # Apply 1% slippage for market orders
+                    if p_side == OrderSide.BUY:
+                        price = ref_price * 1.01
+                    else:
+                        price = ref_price * 0.99
+                else:
+                    return {"error": "Could not fetch ticker for MARKET order price"}
+
             # Truncate quantity to stepSize
             meta = self.contract_meta.get(c_name, {})
             step_size = meta.get("stepSize", 1.0)
